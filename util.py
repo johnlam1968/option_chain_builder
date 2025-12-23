@@ -3,14 +3,11 @@ def store(maturity_date: str, call_conid: str, put_conid: str) -> dict[str, tupl
     _dict.setdefault(maturity_date, (call_conid, put_conid))
     return _dict
 
-def write_csv(symbol: str, dict: dict[str, dict[str, tuple[str, str]]], file_path: str = "option_chain_dataset.csv") -> None:
+def write_csv(symbol: str, df, file_path: str = "option_chain_dataset.csv") -> None:
     import csv
     with open(file_path, "a", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        columns = ["symbol", "expiration", "strike", "right", "conid"]
+        columns = ["symbol", "maturity_date", "strike", "call_conid", "put_conid"]
         writer.writerow(columns)
-        for expiration, strike_dict in dict.items():
-            call_conid, put_conid = strike_dict[expiration]
-            writer.writerow([symbol, expiration, "call", call_conid])
-            writer.writerow([symbol, expiration, "put", put_conid])
-
+        for _, row in df.iterrows():
+            writer.writerow([row["symbol"], row["maturity_date"], row["strike"], row["call_conid"], row["put_conid"]])
