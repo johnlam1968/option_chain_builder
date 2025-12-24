@@ -1,7 +1,8 @@
+import asyncio
 from client import get_underlier, get_strikes, get_contracts
 import pandas as pd
 
-def get_option_chain(symbol: str, exchange: str = "SMART"):
+async def get_option_chain(symbol: str, exchange: str = "SMART"):
     """
     Args:
         symbol (str): symbol of the underlier, e.g. "CL" for Crude Oil Futures options, "ES" for E-mini S&P 500 Futures options, "SPX" for S&P 500 Index options, "SPY" for SPDR S&P 500 ETF options, etc.
@@ -9,7 +10,6 @@ def get_option_chain(symbol: str, exchange: str = "SMART"):
         exchange (str): exchange of the option, e.g. for Futures Options, it could be "NYMEX" for underlying "CL", for stock options, it should be the default "SMART"
 
     """
-
     _underliers = get_underlier(symbol).data # type: ignore
     _underlier = _underliers[0] # type: ignore
     _conid = _underlier.get("conid") # type: ignore
@@ -74,4 +74,4 @@ def get_option_chain(symbol: str, exchange: str = "SMART"):
     write_csv(symbol, pivot_df)
 
 if __name__ == "__main__":
-    get_option_chain("KSA")
+    asyncio.run(get_option_chain("KSA"))
