@@ -1,6 +1,19 @@
 import asyncio
+from typing import List, Dict
+from sqlmodel import Field, SQLModel, create_engine, Session
 from client import get_underlier, get_strikes, get_contracts
-import pandas as pd
+
+class OptionChain(SQLModel, table=True):
+    conid: str = Field(primary_key=True)
+    symbol: str
+    maturity_date: str # Or datetime.date
+    strike: str
+    right: str
+
+# Replace 'localhost' with 'db' if Python is inside the Docker network
+DATABASE_URL = "postgresql+psycopg://postgres:secret@localhost:5432/options_db"
+engine = create_engine(DATABASE_URL)
+SQLModel.metadata.create_all(engine)
 
 async def get_option_chain(symbol: str, exchange: str = "SMART"):
     """
@@ -16,7 +29,7 @@ async def get_option_chain(symbol: str, exchange: str = "SMART"):
     expiration_months = _underlier.get("sections", [{}])[1].get("months", "").split(";") # type: ignore
 
     # Create a list to store all option data
-    option_data = []
+    option_data: List[Dict[str,str]] = []
 
     for _month in expiration_months: # type: ignore
         _strikes = get_strikes(conid=_conid, month=_month, exchange=exchange).data # type: ignore
@@ -52,26 +65,12 @@ async def get_option_chain(symbol: str, exchange: str = "SMART"):
                         "conid": _put_conid,
                     })
 
-    # Convert to DataFrame
-    df = pd.DataFrame(option_data)
+    # Batch Ingestion
+    with Session(engine) as session:
+        for data in option_data:
+            session.add(OptionChain(**data))
+        session.commit()
 
-    # Pivot the data to get call and put conids for each maturity date
-    pivot_df = df.pivot_table(
-        index=["symbol", "maturity_date", "strike"],
-        columns="right",
-        values="conid",
-        aggfunc="first"
-    ).reset_index()
-
-    # Flatten the multi-index columns
-    pivot_df.columns = ["symbol", "maturity_date", "strike", "call_conid", "put_conid"]
-
-    # Replace NaN with "N/A"
-    pivot_df.fillna("N/A", inplace=True)
-
-    # persistent store
-    from util import write_csv
-    write_csv(symbol, pivot_df)
 
 if __name__ == "__main__":
     asyncio.run(get_option_chain("KSA"))

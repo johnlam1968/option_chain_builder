@@ -23,4 +23,3 @@ This is a simple app to build an option chain using IBKR Web API, via ibind clie
    ```
 
 2. The script will retrieve option chain data for the specified symbol (default: "SPX") and save the Contract IDs to a CSV file named `option_chain_dataset.csv`.
-
