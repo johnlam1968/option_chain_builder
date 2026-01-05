@@ -73,4 +73,8 @@ async def get_option_chain(symbol: str, exchange: str = "SMART"):
 
 
 if __name__ == "__main__":
-    asyncio.run(get_option_chain("KSA"))
+    import time
+    start_time = time.time()
+    asyncio.run(get_option_chain("SPY"))
+    end_time = time.time()
+    print(f"Execution Time: {end_time - start_time} seconds")
