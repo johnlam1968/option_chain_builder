@@ -1,23 +1,57 @@
+import asyncio
+import random
 from dotenv import load_dotenv
+import httpx
+from aiolimiter import AsyncLimiter
+import json
+import os
+
 from ibind.client.ibkr_client import IbkrClient # type: ignore
+from typing import List, Dict
 from config import SEARCH_PATH, STRIKE_PATH, INFO_PATH
 
 load_dotenv()
 
-_ibind_client = None
+STATE_FILE = "api_state.json"
 
-def get_client():
-    global _ibind_client
-    if _ibind_client is None:
-        _ibind_client = IbkrClient()
-    return _ibind_client
+_signer = None
 
-def get_underlier(symbol: str):
+def save_api_state(marginal_rate: float):
+    state = {
+        "initial_rate": max(10, marginal_rate * 0.8), # Start at 80% of where you crashed
+        "marginal_rate": marginal_rate
+    }
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+
+def load_initial_rate(default: float = 20):
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            state = json.load(f)
+            return state.get("initial_rate", default)
+    return default
+
+_initial_rate = load_initial_rate(default=10)
+_max_rate = 20
+# limiter = AsyncLimiter(_initial_rate, 1)
+limiter = AsyncLimiter(10, 1)
+gate = asyncio.Event()
+gate.set()
+
+# pool_semaphore = asyncio.Semaphore(100) # Only allow 100 tasks to "work" at once
+
+def get_signer():
+    global _signer
+    if _signer is None:
+        _signer = IbkrClient()
+    return _signer
+
+def get_underliers(symbol: str):
     """
     Args:
         symbol (str): symbol of the underlier, e.g. "CL" for Crude Oil Futures options, "ES" for E-mini S&P 500 Futures options, "SPX" for S&P 500 Index options, "SPY" for SPDR S&P 500 ETF options, etc.
     """
-    client = get_client()
+    client = get_signer()
     return client.get(path=SEARCH_PATH, params={"symbol": symbol}) # type: ignore
 
 def get_strikes(conid: str, month: str, exchange: str = "SMART"):
@@ -27,7 +61,7 @@ def get_strikes(conid: str, month: str, exchange: str = "SMART"):
         month (str): month of the option, e.g. "MAR26"
         exchange (str): exchange of the option, e.g. for Futures Options, it could be "NYMEX" for underlying "CL", for stock options, it should be the default "SMART"
         """
-    client = get_client()
+    client = get_signer()
     return client.get(path=STRIKE_PATH, params={"conid": conid, "secType": "OPT", "month": month, "exchange": exchange}) # type: ignore
 
 def get_contracts(conid: str, month: str, strike: str, right: str):
@@ -38,5 +72,138 @@ def get_contracts(conid: str, month: str, strike: str, right: str):
         strike (str): strike price of the option, e.g. "100"
         right (str): type of the option, e.g. "C" for call, "P" for put
     """
-    client = get_client()
+    client = get_signer()
     return client.get(path=INFO_PATH, params={"conid": conid, "secType": "OPT", "month": month, "strike": strike, "right": right}) # type: ignore
+
+def _build_underlier_url(signer: IbkrClient, underlier: str) -> str:
+    endpoint = f"iserver/secdef/search?symbol={underlier}"
+    full_url = f"{signer.base_url}{endpoint}"
+    return full_url
+
+def _build_strike_url(signer: IbkrClient, conid: str, month: str, exchange: str = "SMART") -> str:
+    clean_month = month.replace(" ", "")
+    if exchange == "SMART":
+        endpoint = f"iserver/secdef/strikes?conid={conid}&sectype=OPT&month={clean_month}"
+    else:
+        endpoint = f"iserver/secdef/strikes?conid={conid}&sectype=OPT&month={clean_month}&exchange={exchange}"
+    full_url = f"{signer.base_url}{endpoint}"
+    return full_url
+
+def _build_contract_url(signer: IbkrClient, conid: str, month: str, strike: str, right: str) -> str:
+    if " " not in month:
+        month = f"{month[:3]} {month[3:]}"
+    endpoint = f"iserver/secdef/info?conid={conid}&secType=OPT&month={month}&strike={strike}&right={right}"
+    full_url = f"{signer.base_url}{endpoint}"
+    return full_url
+
+async def _get_underliers(session: httpx.AsyncClient, signer: IbkrClient, symbol: str) -> List[Dict[str, str]]:
+    url = _build_underlier_url(signer, symbol)
+    oauth_headers = signer._get_headers(request_method="GET", request_url=url) # type: ignore
+    response = await session.get(
+        url,
+        headers=oauth_headers,  # type: ignore
+        timeout=15.0
+    )
+    if response.status_code == 503:
+        print("🚨 Service Unavailable (503). Retrying after brief pause...")
+        await asyncio.sleep(5)  # Wait before retrying
+        response = await session.get(
+            url,
+            headers=oauth_headers,  # type: ignore
+            timeout=15.0
+        )
+
+    if response.status_code == 200:
+        return response.json()
+
+async def _get_strikes(session: httpx.AsyncClient, signer: IbkrClient, conid: str, month: str, exchange: str = "SMART") -> httpx.Response:
+    url = _build_strike_url(signer, conid, month, exchange)
+    oauth_headers = signer._get_headers(request_method="GET", request_url=url) # type: ignore
+    response = await session.get(
+        url,
+        headers=oauth_headers,  # type: ignore
+        timeout=15.0
+    )
+    return response
+
+async def _async_limiting(session: httpx.AsyncClient, signer: IbkrClient, function, *args) -> List[Dict[str, str]] | Dict[str, List[str]]:
+    auth_status = await session.get(f"{signer.base_url}iserver/auth/status")
+    if auth_status.status_code != 200 or not auth_status.json().get('authenticated'):
+        print("❌ Session lost. Re-authentication required.")
+        # Trigger your login logic here
+
+    # async with pool_semaphore:
+
+    while True:
+
+        await gate.wait()
+
+        async with limiter:
+            if not gate.is_set():
+                continue
+            try:
+                response = await function(session, signer, *args)
+
+                if response is None:
+                    continue
+
+                if response.status_code == 200:
+                    # Heuristic: Slowly increase rate if we are successful
+                    # (e.g., add 0.1 to max_rate every 100 successful calls)
+                    if random.random() < 0.2:
+                        limiter.max_rate  = min(limiter.max_rate + 1, _max_rate)
+                    if function == _get_contracts:
+                        return response.json()
+                    elif function == _get_strikes:
+                        _dict = response.json()
+                        _call_strikes = _dict.get("call", [])
+                        month = args[1]
+                        _result_dict = {month: _call_strikes}
+                        return _result_dict
+
+                elif response.status_code == 429:
+                    if gate.is_set():
+                        gate.clear()
+
+                    _marginal_rate = limiter.max_rate
+                    save_api_state(_marginal_rate)
+                    print(f"🚨 429 at {_marginal_rate} req/s. Throttling down... Pause for a 15 minutes penalty period.")
+
+                    limiter.max_rate = max(1, limiter.max_rate - 1)
+                    print(f"Rate limit hit. Reducing rate to {limiter.max_rate} req/s.")
+                    
+                    await asyncio.sleep(900) # 15 minute ban
+                    print("✅ Penalty over. Opening gate.")
+                    gate.set()
+                    continue  # Retry after sleep
+
+            except (httpx.PoolTimeout, httpx.ReadTimeout, httpx.ConnectTimeout):
+                limiter.max_rate = max(5, limiter.max_rate - 5)
+                print(f"⏱️ Timeout. Reducing rate to {limiter.max_rate} req/s.")
+                await asyncio.sleep(2) # Give the network a breather
+                continue
+
+async def _get_contracts(session: httpx.AsyncClient, signer: IbkrClient, conid: str, month: str, strike: str, right: str) -> httpx.Response | None:
+    _healthy = signer.check_health()
+    if not _healthy:
+        print(f"Signer is not healthy.")
+        return None
+
+    try:
+        url = _build_contract_url(signer, conid, month, strike, right)
+        oauth_headers = signer._get_headers(request_method="GET", request_url=url) # type: ignore
+        response = await session.get(
+                        url,
+                        headers=oauth_headers,  # type: ignore
+                        timeout=15.0
+                    )
+        
+        return response
+
+    except httpx.PoolTimeout as e:
+        print("📁 Connection Pool Full: Waiting for a slot...")
+        await asyncio.sleep(1) # Back off to let the pool clear
+        return None # Or 'continue' if inside a 'while True' loop
+    except httpx.TimeoutException as e:
+        print(f"⏱️ General Timeout (Read/Connect): {e}")
+        return None
