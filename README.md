@@ -22,4 +22,5 @@ This is a simple app to build an option chain using IBKR Web API, via ibind clie
    python src/infrastructure/option_chain_app/main.py
    ```
 
-2. The script will retrieve option chain data for the specified symbol (default: "SPX") and save to a Postgre database in a docker container.
+2. The script will retrieve option chain data for the specified symbol (default: "SPX") and save to a PostgreSQL database in a docker container.
+3. docker run -d   --name options-db-container   -e POSTGRES_USER=postgres   -e POSTGRES_PASSWORD=secret   -e POSTGRES_DB=options_db   -p 5432:5432   postgre

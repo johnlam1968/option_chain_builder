@@ -67,4 +67,4 @@ async def get_option_chain(symbol: str, exchange: str = "SMART") -> None:
     store_data(option_data)
 
 if __name__ == "__main__":
-    asyncio.run(get_option_chain("FXI"))
+    asyncio.run(get_option_chain("SPY"))
