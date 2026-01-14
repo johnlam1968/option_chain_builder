@@ -3,10 +3,10 @@ import asyncio
 from typing import List, Dict
 from main import get_signer
 from store_data import store_data
+from httpx import AsyncClient
+from AsyncFetcher import get_contracts_async, get_underliers_async, get_strikes_async, async_limiting
 
 async def get_option_chain_async(symbol: str, exchange: str = "SMART") -> None:
-    from httpx import AsyncClient
-    from httpx_calls import get_contracts_async, get_underliers_async, get_strikes_async, async_limiting
 
 
     signer = get_signer()
@@ -42,6 +42,8 @@ async def get_option_chain_async(symbol: str, exchange: str = "SMART") -> None:
             for strike in strikes:
                 _call_tasks.append(async_limiting(session, signer, get_contracts_async, _conid, month, strike, "C")) # type: ignore
                 _put_tasks.append(async_limiting(session, signer, get_contracts_async, _conid, month, strike, "P")) # type: ignore
+
+        # cut the _call_tasks into chunks?
 
         import time
         start_time = time.time()
@@ -79,4 +81,4 @@ async def get_option_chain_async(symbol: str, exchange: str = "SMART") -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(get_option_chain_async("SPX"))
+    asyncio.run(get_option_chain_async("KSA"))

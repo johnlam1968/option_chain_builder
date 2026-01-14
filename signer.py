@@ -8,5 +8,5 @@ _signer = None
 def get_signer():
     global _signer
     if _signer is None:
-        _signer = IbkrClient()
+        _signer = IbkrClient(use_oauth=True, timeout=15)
     return _signer
