@@ -2,6 +2,7 @@
 from ibind import IbkrClient
 from config import SEARCH_PATH, STRIKE_PATH, INFO_PATH
 from typing import Union, Optional
+from SyncRetryHandler import SyncRetryHandler
 
 
 class SyncFetcher:
@@ -12,6 +13,7 @@ class SyncFetcher:
     - Fetching underliers (search)
     - Fetching option strikes
     - Fetching contract details
+    - Retry logic for 429 rate limits and 5xx server errors
     
     All methods return data directly or None on failure.
     """
@@ -24,6 +26,7 @@ class SyncFetcher:
             client: IbkrClient instance for API calls
         """
         self._client = client
+        self._retry_handler = SyncRetryHandler()
     
     def get_underliers(self, symbol: str) -> Optional[Union[list, dict]]:
         """
@@ -35,8 +38,13 @@ class SyncFetcher:
         Returns:
             List/dict of underlier data, or None if failed
         """
-        result = self._client.get(path=SEARCH_PATH, params={"symbol": symbol}).data
-        return result
+        def _make_request():
+            return self._client.get(path=SEARCH_PATH, params={"symbol": symbol})
+        
+        result = self._retry_handler.retry(_make_request)
+        if result is not None:
+            return result.data
+        return None
     
     def get_strikes(self, conid: str, month: str, sectype: str, exchange: str = "SMART") -> Optional[Union[list, dict]]:
         """
@@ -51,13 +59,18 @@ class SyncFetcher:
         Returns:
             List/dict of strike data, or None if failed
         """
-        result = self._client.get(path=STRIKE_PATH, params={
-            "conid": conid,
-            "sectype": sectype,
-            "month": month,
-            "exchange": exchange
-        }).data
-        return result
+        def _make_request():
+            return self._client.get(path=STRIKE_PATH, params={
+                "conid": conid,
+                "sectype": sectype,
+                "month": month,
+                "exchange": exchange
+            })
+        
+        result = self._retry_handler.retry(_make_request)
+        if result is not None:
+            return result.data
+        return None
     
     def get_contract(self, conid: str, month: str, strike: str, right: str, sectype: str, exchange: str = "SMART") -> Optional[dict]:
         """
@@ -74,18 +87,21 @@ class SyncFetcher:
         Returns:
             Dictionary with contract data, or None if failed
         """
-        try:
-            result = self._client.get(path=INFO_PATH, params={
+        def _make_request():
+            return self._client.get(path=INFO_PATH, params={
                 "conid": conid,
                 "secType": sectype,
                 "month": month,
                 "strike": strike,
                 "right": right,
                 "exchange": exchange
-            }).data
+            })
+        
+        result = self._retry_handler.retry(_make_request)
+        if result is not None:
+            data = result.data
             # Handle both list and dict responses - always return dict
-            if isinstance(result, list) and len(result) > 0:
-                return result[0]  # type: ignore
-            return result  # type: ignore
-        except Exception as e:
-            return None
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]  # type: ignore
+            return data  # type: ignore
+        return None
