@@ -6,14 +6,17 @@ Tests different MAX_CONCURRENCY values and measures:
 - Total time to complete
 - HTTP 503 errors (concurrent limit exceeded)
 """
-import asyncio
 import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import asyncio
 import time
 import importlib.util
 from dotenv import load_dotenv
 from httpx import AsyncClient, Limits
-from session_health_helper import create_session_aware_client
-from config import (
+from utils.session_health_helper import create_session_aware_client
+from settings.config import (
     DEFAULT_SYMBOL, DEFAULT_EXCHANGE, 
     MAX_RATE, MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS, 
     KEEPALIVE_EXPIRY, GET_RESPONSE_TIME_OUT, IBKR_BASE_URL,
@@ -52,7 +55,7 @@ async def test_concurrency(max_concurrency: int) -> dict:
     print(f"{'='*60}")
     
     # Temporarily override config
-    import config as cfg
+    import settings.config as cfg
     original_max_concurrency = cfg.MAX_CONCURRENCY
     cfg.MAX_CONCURRENCY = max_concurrency
     

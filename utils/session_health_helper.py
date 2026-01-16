@@ -13,7 +13,7 @@ from typing import Optional, Callable
 from ibind import IbkrClient
 from ibind.support.errors import ExternalBrokerError
 from ibind.oauth.oauth1a import OAuth1aConfig
-from client_helper import create_ibkr_client
+from utils.client_helper import create_ibkr_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

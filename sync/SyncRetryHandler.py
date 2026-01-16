@@ -17,9 +17,13 @@ Configuration:
     - max_backoff: Maximum backoff cap in seconds
 """
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 from typing import Any, Callable, Optional
-from config import BACKOFF_MULTIPLIER, INITIAL_BACKOFF, MAX_BACKOFF, MAX_RETRIES
+from settings.config import BACKOFF_MULTIPLIER, INITIAL_BACKOFF, MAX_BACKOFF, MAX_RETRIES
 
 
 class SyncRetryHandler:

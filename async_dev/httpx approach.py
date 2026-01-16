@@ -1,21 +1,26 @@
 # Refactored with aiometer and tenacity
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 import asyncio
 import functools
 from typing import List, Dict
-from store_data import store_data
+from utils.database import store_data
 import httpx
 from httpx import AsyncClient
 from AsyncFetcher import AsyncFetcher
 from ibind import IbkrClient
-from session_health_helper import create_session_aware_client
+from utils.session_health_helper import create_session_aware_client
 import time
 from aiometer import run_all
-from config import (
+from settings.config import (
     DEFAULT_SYMBOL, DEFAULT_EXCHANGE, DEFAULT_USE_LOOP, 
     GET_RESPONSE_TIME_OUT, MAX_RATE, MAX_CONCURRENCY,
     MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS, KEEPALIVE_EXPIRY
 )
+from utils.response_extraction import ResponseExtraction
 
 load_dotenv()
 
@@ -69,29 +74,21 @@ class AsyncOptionChainBuilder:
             return
             
         _underlier = _underliers[0]  # type: ignore
-        _conid = _underlier.get("conid")
         
-        if not _conid:
-            print(f"No conid found for underlier: {_underlier}")
+        # Extract underlier info using ResponseExtraction
+        extracted_info = ResponseExtraction.extract_underlier_info(_underlier, self._symbol)
+        if extracted_info is None:
             return
         
+        _conid, _option_type, _option_exchange, expiration_months = extracted_info
         
-        _sections = _underlier.get("sections", [{}])
-        if len(_sections) < 2:
-            print("No derivatives found for underlier")
+        # Validate extracted values
+        if not _option_type:
+            print("No option type found in underlier data")
             return
-
-        _underlier_section = _sections[0]
-        # Handle special exchange types (HK/China)
-        if _underlier_section.get('exchange') in {"SEHK;", "HKFE;"} or _underlier_section.get('secType') == 'IND':
-            _option_section = _sections[2]
-            print(f"Option Section: {_option_section}")
-        else:
-            _option_section = _sections[1]
-
-        _option_type = _option_section.get('secType', 'OPT')
-        _option_exchange = _option_section.get('exchange', 'SMART')
-        expiration_months = _option_section.get("months", "").split(";") 
+        if not _option_exchange:
+            print("No exchange found in underlier data")
+            return
 
         # Fetch strikes for all expiration months using aiometer
         _strike_tasks = [
@@ -110,7 +107,8 @@ class AsyncOptionChainBuilder:
         for month, response in zip(expiration_months, _strike_responses):
             if response and response.status_code == 200:
                 _dict = response.json()
-                _call_strikes = _dict.get("call", [])
+                # Extract call strikes using ResponseExtraction
+                _call_strikes = ResponseExtraction.extract_strikes_info(_dict)
                 _strike_dicts.append({month: _call_strikes})
             else:
                 print(f"Failed to fetch strikes for {month}")
@@ -127,7 +125,10 @@ class AsyncOptionChainBuilder:
     async def get_option_chain_loop(self, conid, option_type, option_exchange, list_of_dict) -> None:
         """Fetch option chain using sequential loop with Fetcher class."""
         stat_time = time.time()
-        option_data: List[Dict[str, str]] = []
+        
+        # Collect call and put results
+        call_results = []
+        put_results = []
         
         for _dict in list_of_dict:
             for k, v in _dict.items():
@@ -136,46 +137,27 @@ class AsyncOptionChainBuilder:
                 for strike in strikes:
                     # Use Fetcher for contract details
                     c_response = await self._fetcher.get_contract(conid, month, strike, "C", option_type, option_exchange)
-
                     if c_response:
-                        _call_conid = c_response.get('conid')
-                        _call_maturity_date = c_response.get('maturity_date')
-                        _call_strike = c_response.get('strike')
-                        # Only add if all required fields are present
-                        if all([_call_conid, _call_maturity_date, _call_strike]):
-                            option_data.append({
-                                "symbol": self._symbol,
-                                "maturity_date": str(_call_maturity_date),
-                                "strike": str(_call_strike),
-                                "right": "C",
-                                "conid": str(_call_conid),
-                            })
+                        call_results.append(c_response)
 
                     p_response = await self._fetcher.get_contract(conid, month, strike, "P", option_type, option_exchange)
-
                     if p_response:
-                        _put_conid = p_response.get("conid")
-                        _put_maturity_date = p_response.get('maturity_date')
-                        _put_strike = p_response.get("strike")
-                        # Only add if all required fields are present
-                        if all([_put_conid, _put_maturity_date, _put_strike]):
-                            option_data.append({
-                                "symbol": self._symbol,
-                                "maturity_date": str(_put_maturity_date),
-                                "strike": str(_put_strike),
-                                "right": "P",
-                                "conid": str(_put_conid),
-                            })
+                        put_results.append(p_response)
 
         end_time = time.time()
         _lapse = end_time - stat_time
+        
+        # Extract option data using ResponseExtraction
+        option_data = ResponseExtraction.extract_option_results(
+            call_results, put_results, self._symbol
+        )
+        
         print(f"Retrieved {len(option_data)} contracts in {_lapse}")
-
         store_data(option_data)
 
     async def get_option_chain_gather(self, conid, option_type, option_exchange, strike_dicts) -> None:
         """Fetch option chain using aiometer for rate limiting and concurrency control."""
-        option_data: List[Dict[str, str]] = []
+        option_data: List[Dict[str, str | None]] = []
         
         # Collect all tasks
         _call_tasks = []
@@ -214,7 +196,10 @@ class AsyncOptionChainBuilder:
         end_time = time.time()
         print(f"Fetched {len(_call_result_list) + len(_put_result_list)} contracts in {end_time - start_time} seconds.")
 
-        option_data = self._process_batch_results(_call_result_list, _put_result_list)
+        # Extract option data using ResponseExtraction
+        option_data = ResponseExtraction.extract_option_results(
+            _call_result_list, _put_result_list, self._symbol
+        )
 
         _task_length = len(_call_tasks) + len(_put_tasks)
         _retrieved_length = len(option_data)
@@ -222,78 +207,6 @@ class AsyncOptionChainBuilder:
         print(f"Retrieved {_retrieved_length} out of requested {_task_length}, with {_diff} not retrieved.")
 
         store_data(option_data)
-
-    def _process_batch_results(self, _call_result_list, _put_result_list) -> List[Dict[str, str]]:
-        """Process batch results from Fetcher calls into consistent format."""
-        option_data: List[Dict[str, str]] = []
-
-        for _call_item in _call_result_list:
-            if not _call_item:
-                continue
-            
-            # Handle dict responses (formatted contract data)
-            if isinstance(_call_item, dict):
-                _call_conid = _call_item.get("conid")
-                _call_maturity_date = _call_item.get("maturityDate")  # API returns camelCase
-                _call_strike = _call_item.get("strike")
-                # Only add if all required fields are present
-                if all([_call_conid, _call_maturity_date, _call_strike]):
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": str(_call_maturity_date),
-                        "strike": str(_call_strike),
-                        "right": "C",
-                        "conid": str(_call_conid),
-                    })
-            elif isinstance(_call_item, list) and len(_call_item) > 0:
-                _call_data = _call_item[0]
-                _call_conid = _call_data.get("conid")
-                _call_maturity_date = _call_data.get("maturityDate")
-                _call_strike = _call_data.get("strike")
-                # Only add if all required fields are present
-                if all([_call_conid, _call_maturity_date, _call_strike]):
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": str(_call_maturity_date),
-                        "strike": str(_call_strike),
-                        "right": "C",
-                        "conid": str(_call_conid),
-                    })
-
-        for _put_item in _put_result_list:
-            if not _put_item:
-                continue
-            
-            # Handle dict responses (formatted contract data)
-            if isinstance(_put_item, dict):
-                _put_conid = _put_item.get("conid")
-                _put_maturity_date = _put_item.get("maturityDate")  # API returns camelCase
-                _put_strike = _put_item.get("strike")
-                # Only add if all required fields are present
-                if all([_put_conid, _put_maturity_date, _put_strike]):
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": str(_put_maturity_date),
-                        "strike": str(_put_strike),
-                        "right": "P",
-                        "conid": str(_put_conid),
-                    })
-            elif isinstance(_put_item, list) and len(_put_item) > 0:
-                _put_data = _put_item[0]
-                _put_conid = _put_data.get("conid")
-                _put_maturity_date = _put_data.get("maturityDate")
-                _put_strike = _put_data.get("strike")
-                # Only add if all required fields are present
-                if all([_put_conid, _put_maturity_date, _put_strike]):
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": str(_put_maturity_date),
-                        "strike": str(_put_strike),
-                        "right": "P",
-                        "conid": str(_put_conid),
-                    })
-        
-        return option_data
 
 if __name__ == "__main__":
     # Redirect stdout to log file

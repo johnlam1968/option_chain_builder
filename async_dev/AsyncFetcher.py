@@ -1,5 +1,9 @@
 # Direct calls to IBKR API using httpx with tenacity retry logic
 # ibind client for OAuth signing
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 import asyncio
 from httpx import AsyncClient, Response, PoolTimeout, ReadTimeout, ConnectTimeout
@@ -13,10 +17,8 @@ from tenacity import (
     before_sleep_log,
     RetryError
 )
-from config import (
-    SEARCH_PATH, STRIKE_PATH, INFO_PATH, IBKR_BASE_URL, 
-    GET_RESPONSE_TIME_OUT, MAX_RETRIES, MAX_BACKOFF
-)
+from settings.config import GET_RESPONSE_TIME_OUT, MAX_RETRIES, MAX_BACKOFF
+from utils.url_builder import UrlBuilder
 
 # Configure logger for tenacity
 logger = logging.getLogger(__name__)
@@ -50,27 +52,6 @@ class AsyncFetcher:
         """
         self._session = session
         self._signer = signer
-    
-    def _build_underlier_url(self, underlier: str) -> str:
-        """Build URL for underlier search endpoint."""
-        endpoint = SEARCH_PATH + f"?symbol={underlier}"
-        return f"{IBKR_BASE_URL}{endpoint}"
-    
-    def _build_strike_url(self, conid: str, month: str, secType: str, exchange: str = "SMART") -> str:
-        """Build URL for strikes endpoint."""
-        clean_month = month.replace(" ", "")
-        if exchange == "SMART":
-            endpoint = STRIKE_PATH + f"?conid={conid}&sectype={secType}&month={clean_month}"
-        else:
-            endpoint = STRIKE_PATH + f"?conid={conid}&sectype={secType}&month={clean_month}&exchange={exchange}"
-        return f"{IBKR_BASE_URL}{endpoint}"
-    
-    def _build_contract_url(self, conid: str, month: str, strike: str, right: str, secType: str, exchange: str) -> str:
-        """Build URL for contract info endpoint."""
-        if " " not in month:
-            month = f"{month[:3]} {month[3:]}"
-        endpoint = INFO_PATH + f"?conid={conid}&secType={secType}&month={month}&strike={strike}&right={right}&exchange={exchange}"
-        return f"{IBKR_BASE_URL}{endpoint}"
     
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
@@ -142,7 +123,7 @@ class AsyncFetcher:
         Returns:
             List of underlier data dictionaries
         """
-        url = self._build_underlier_url(symbol)
+        url = UrlBuilder.build_underlier_url(symbol)
         print(f"Fetching underliers for {symbol}...")
         response = await self._get_response(url)
         
@@ -167,7 +148,7 @@ class AsyncFetcher:
         Returns:
             httpx Response object with strike data
         """
-        url = self._build_strike_url(conid, month, secType, exchange)
+        url = UrlBuilder.build_strike_url(conid, month, secType, exchange)
         return await self._get_response(url)
     
     async def get_contract(self, conid: str, month: str, strike: str, right: str, secType: str, exchange: str = "SMART") -> dict[str, str] | None:
@@ -185,7 +166,7 @@ class AsyncFetcher:
         Returns:
             Dictionary with contract data, or None if failed
         """
-        url = self._build_contract_url(conid, month, strike, right, secType, exchange)
+        url = UrlBuilder.build_contract_url(conid, month, strike, right, secType, exchange)
         response = await self._get_response(url)
         
         if response.status_code == 200:

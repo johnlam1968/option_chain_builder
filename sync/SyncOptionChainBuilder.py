@@ -1,10 +1,15 @@
 # Synchronous option chain builder using SyncFetcher
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from SyncFetcher import SyncFetcher
-from store_data import store_data
+from utils.database import store_data
 from ibind import IbkrClient
-from typing import List, Dict
+from typing import List, Dict, Any
 import time
-from config import DEFAULT_SYMBOL, DEFAULT_EXCHANGE
+from settings.config import DEFAULT_SYMBOL, DEFAULT_EXCHANGE
+from utils.response_extraction import ResponseExtraction
 
 
 class SyncOptionChainBuilder:
@@ -40,31 +45,22 @@ class SyncOptionChainBuilder:
             return
         
         underlier = underliers[0]  # type: ignore
-        conid = underlier.get("conid")
         
-        if not conid:
-            print(f"No contract ID found for {self._symbol}")
+        # Extract underlier info using ResponseExtraction
+        extracted_info = ResponseExtraction.extract_underlier_info(underlier, self._symbol)
+        if extracted_info is None:
             return
         
-        sections = underlier.get("sections", [{}])
-        if len(sections) < 2:
-            print("No derivatives found for underlier")
+        conid, option_type, option_exchange, expiration_months = extracted_info
+        
+        # Validate extracted values
+        if not option_type:
+            print("No option type found in underlier data")
             return
-
-        # Get option section (handle special exchange types)
-        underlier_section = sections[0]
-        if underlier_section.get('exchange') in {"SEHK;", "HKFE;"} or underlier_section.get('secType') == 'IND':
-            option_section = sections[2]
-            print(f"Option Section: {option_section}")
-        else:
-            option_section = sections[1]
-
-        option_type = option_section.get('secType')
-        option_exchange = option_section.get('exchange')
-        # Extract only the first exchange if multiple are provided
-        if option_exchange and ';' in option_exchange:
-            option_exchange = option_exchange.split(';')[0]
-        expiration_months = option_section.get("months", "").split(";")
+        if not option_exchange:
+            print("No exchange found in underlier data")
+            return
+        
         option_data: List[Dict[str, str | None]] = []
         start_time = time.time()
         
@@ -75,46 +71,33 @@ class SyncOptionChainBuilder:
                 print(f"No strikes found for {month}")
                 continue
             
-            # strikes can be either dict or list, handle both cases
-            if isinstance(strikes, dict):
-                call_strikes = strikes.get("call", [])
-            elif isinstance(strikes, list):
-                call_strikes = strikes
-            else:
-                continue
+            # Extract call strikes using ResponseExtraction
+            call_strikes = ResponseExtraction.extract_strikes_info(strikes)
+            
+            # Collect call and put results
+            call_results = []
+            put_results = []
             
             for strike in call_strikes:
                 # Get call contract
                 call_result = self._fetcher.get_contract(
                     conid, month, strike, "C", option_type, option_exchange
                 )
-                
                 if call_result:
-                    call_conid = call_result.get("conid")  # type: ignore
-                    call_maturity_date = call_result.get("maturityDate")  # type: ignore
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": call_maturity_date,
-                        "strike": strike,
-                        "right": "C",
-                        "conid": call_conid,
-                    })
+                    call_results.append(call_result)
                 
                 # Get put contract
                 put_result = self._fetcher.get_contract(
                     conid, month, strike, "P", option_type, option_exchange
                 )
-                
                 if put_result:
-                    put_conid = put_result.get("conid")  # type: ignore
-                    put_maturity_date = put_result.get("maturityDate")  # type: ignore
-                    option_data.append({
-                        "symbol": self._symbol,
-                        "maturity_date": put_maturity_date,
-                        "strike": strike,
-                        "right": "P",
-                        "conid": put_conid,
-                    })
+                    put_results.append(put_result)
+            
+            # Extract option data using ResponseExtraction
+            month_option_data = ResponseExtraction.extract_option_results(
+                call_results, put_results, self._symbol
+            )
+            option_data.extend(month_option_data)
 
         end_time = time.time()
         elapsed = end_time - start_time

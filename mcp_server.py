@@ -3,7 +3,7 @@ import threading
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
 from typing import Callable, TypeVar, Awaitable
-from main import get_option_chain
+from sync.main import get_option_chain
 
 
 load_dotenv()
@@ -19,13 +19,18 @@ def mcp_tool(func: F) -> F:
 
 @mcp_tool
 async def fetch_option_chain(symbol: str, exchange: str = "SMART") -> str:
-    """Retrieve option chain data for a given symbol and exchange. It will takes a while. For a option chain with X contracts, it will takes minimal X * 10 seconds in total."""
+    """
+    Retrieve option chain data for a given symbol and exchange, using synchronous approach. For a option chain with X contracts, it takes approximately X * 10 seconds in total.
+
+    Args:
+        symbol (str): The symbol of the underlier, for which to retrieve the option chain data.
+        exchange (str, optional): Refer to underlier_mapping.md. Defaults to "SMART".
+    """
     thread = threading.Thread(target=_thread_worker, args=(symbol, exchange))
     thread.start()
     return f"Started to fetch option chain data for {symbol} on {exchange}, please come back later to check if the data is ready."
 
 def _thread_worker(symbol: str, exchange: str = "SMART") -> None:
-    #TODO: Follow latest implementation of SyncOptionChainBuilder
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -35,20 +40,17 @@ def _thread_worker(symbol: str, exchange: str = "SMART") -> None:
             
 @mcp_tool
 async def check_option_chain(symbol: str) -> str:
-    """Check if option chain data ("option_chain_dataset.csv") is available for a given symbol and exchange."""
-    #TODO: No more csv stored on disk. Use PostgreSQL query.
-    import os, csv, json
-    data = []
-    with open("option_chain_dataset.csv", 'r', encoding='utf-8') as f:
-        if not os.path.exists(f.name):
-            return json.dumps({"error": "Option Chain File not found"}, indent=4)
-        reader = csv.DictReader(f)
-        for row in reader:
-            if symbol not in row['symbol']:
-                continue
-            data.append(row) # type: ignore
-    return str(data) # type: ignore
+    """Check if option chain data is available in PostgreSQL for a given symbol."""
+    import json
+    from utils.database import query_option_chain
+    
+    try:
+        data = query_option_chain(symbol)
+        if not data:
+            return json.dumps({"error": f"No option chain data found for symbol '{symbol}'"}, indent=4)
+        return json.dumps(data, indent=4)
+    except Exception as e:
+        return json.dumps({"error": f"Database query failed: {str(e)}"}, indent=4)
 
 if __name__ == "__main__":
     server.run()
-

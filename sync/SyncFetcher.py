@@ -1,8 +1,13 @@
 # Synchronous calls to IBKR API using ibind
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from ibind import IbkrClient
-from config import SEARCH_PATH, STRIKE_PATH, INFO_PATH
 from typing import Union, Optional
 from SyncRetryHandler import SyncRetryHandler
+from utils.url_builder import UrlBuilder
+from settings.config import SEARCH_PATH, STRIKE_PATH, INFO_PATH
 
 
 class SyncFetcher:
@@ -39,7 +44,8 @@ class SyncFetcher:
             List/dict of underlier data, or None if failed
         """
         def _make_request():
-            return self._client.get(path=SEARCH_PATH, params={"symbol": symbol})
+            params = UrlBuilder.build_underlier_params(symbol)
+            return self._client.get(path=SEARCH_PATH, params=params)
         
         result = self._retry_handler.retry(_make_request)
         if result is not None:
@@ -60,12 +66,8 @@ class SyncFetcher:
             List/dict of strike data, or None if failed
         """
         def _make_request():
-            return self._client.get(path=STRIKE_PATH, params={
-                "conid": conid,
-                "sectype": sectype,
-                "month": month,
-                "exchange": exchange
-            })
+            params = UrlBuilder.build_strike_params(conid, month, sectype, exchange)
+            return self._client.get(path=STRIKE_PATH, params=params)
         
         result = self._retry_handler.retry(_make_request)
         if result is not None:
@@ -88,14 +90,8 @@ class SyncFetcher:
             Dictionary with contract data, or None if failed
         """
         def _make_request():
-            return self._client.get(path=INFO_PATH, params={
-                "conid": conid,
-                "secType": sectype,
-                "month": month,
-                "strike": strike,
-                "right": right,
-                "exchange": exchange
-            })
+            params = UrlBuilder.build_contract_params(conid, month, strike, right, sectype, exchange)
+            return self._client.get(path=INFO_PATH, params=params)
         
         result = self._retry_handler.retry(_make_request)
         if result is not None:

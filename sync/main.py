@@ -1,9 +1,31 @@
 # Synchronous option chain builder
 import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from SyncFetcher import SyncFetcher
 from SyncOptionChainBuilder import SyncOptionChainBuilder
 from ibind import IbkrClient
-from config import DEFAULT_SYMBOL, DEFAULT_EXCHANGE
+from settings.config import DEFAULT_SYMBOL, DEFAULT_EXCHANGE
+
+
+async def get_option_chain(symbol: str, exchange: str = "SMART") -> None:
+    """
+    Asynchronous wrapper for fetching option chain data.
+    Used by MCP server for threaded execution.
+    
+    Args:
+        symbol: Stock/ETF/Index symbol
+        exchange: Exchange identifier
+    """
+    # Create IBKR client
+    client = IbkrClient(use_oauth=True, timeout=15)
+    
+    # Create sync builder
+    builder = SyncOptionChainBuilder(client, symbol, exchange)
+    
+    # Build option chain
+    builder.get_option_chain()
 
 
 if __name__ == "__main__":
