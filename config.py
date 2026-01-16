@@ -24,13 +24,14 @@ MAX_BACKOFF = 10.0           # Maximum backoff cap in seconds
 # Concurrency and rate limiting configuration
 # Note: IBKR uses HTTP/1.1 (no multiplexing), so each request requires a connection from the pool
 # MAX_CONCURRENCY must be < MAX_CONNECTIONS to avoid PoolTimeout
-MAX_CONCURRENCY = 5          # Max concurrent requests (conservative start for IBKR gateway)
+# IMPORTANT: IBKR has a concurrent request limit that triggers 503 errors when exceeded (tested: 20 causes 503s)
+MAX_CONCURRENCY = 8          # Test value 2/6: Matches natural concurrency (10 req/s * 0.80s)
 MAX_RATE = 10                # Rate limit: requests per second (IBKR API limit)
 
 # Connection pool configuration (important for HTTP/1.1)
-# Adjust these based on your concurrency needs
-MAX_CONNECTIONS = 100               # Hard limit on concurrent connections
-MAX_KEEPALIVE_CONNECTIONS = 20     # Reuse connections (important for HTTP/1.1 performance)
+# These should be consistent with MAX_CONCURRENCY since aiometer controls actual concurrency
+MAX_CONNECTIONS = 16               # Hard limit on concurrent connections (2x MAX_CONCURRENCY for safety buffer)
+MAX_KEEPALIVE_CONNECTIONS = 8      # Reuse connections (equal to MAX_CONCURRENCY for efficiency)
 KEEPALIVE_EXPIRY = 30.0             # Keep connections alive for 30 seconds
 
 #TODO: organize above parameter defaults, review duplicate/conflicts of using these defaults in code base.

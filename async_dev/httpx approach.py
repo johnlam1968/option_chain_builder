@@ -2,7 +2,7 @@
 from dotenv import load_dotenv
 import asyncio
 import functools
-from typing import List, Dict, Optional
+from typing import List, Dict
 from store_data import store_data
 import httpx
 from httpx import AsyncClient

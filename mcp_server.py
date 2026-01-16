@@ -19,12 +19,13 @@ def mcp_tool(func: F) -> F:
 
 @mcp_tool
 async def fetch_option_chain(symbol: str, exchange: str = "SMART") -> str:
-    """Retrieve option chain data for a given symbol and exchange. It will takes a while."""
+    """Retrieve option chain data for a given symbol and exchange. It will takes a while. For a option chain with X contracts, it will takes minimal X * 10 seconds in total."""
     thread = threading.Thread(target=_thread_worker, args=(symbol, exchange))
     thread.start()
     return f"Started to fetch option chain data for {symbol} on {exchange}, please come back later to check if the data is ready."
 
 def _thread_worker(symbol: str, exchange: str = "SMART") -> None:
+    #TODO: Follow latest implementation of SyncOptionChainBuilder
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -35,6 +36,7 @@ def _thread_worker(symbol: str, exchange: str = "SMART") -> None:
 @mcp_tool
 async def check_option_chain(symbol: str) -> str:
     """Check if option chain data ("option_chain_dataset.csv") is available for a given symbol and exchange."""
+    #TODO: No more csv stored on disk. Use PostgreSQL query.
     import os, csv, json
     data = []
     with open("option_chain_dataset.csv", 'r', encoding='utf-8') as f:
@@ -49,3 +51,4 @@ async def check_option_chain(symbol: str) -> str:
 
 if __name__ == "__main__":
     server.run()
+

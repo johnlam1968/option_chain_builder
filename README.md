@@ -27,3 +27,6 @@ This is a simple app to build an option chain using IBKR Web API, via ibind clie
 
 ## IBKR API documentation
 https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#option-chain
+
+## DEV
+Trying to find out if httpx can improve retrieval time from IBKR Web API.
