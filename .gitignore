@@ -1,7 +1,7 @@
 __pycache__/
 option_chain_dataset.csv
 
-/cline
+cline/
 # Logs
 logs/
 /tmp/*.log
