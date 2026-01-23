@@ -26,10 +26,10 @@ INFO_PATH = "iserver/secdef/info"       # Get contract details
 # DEFAULT VALUES
 # ============================================================================
 
-DEFAULT_SYMBOL = "HSI"
+DEFAULT_SYMBOL = "FXI"
 # Default symbol/underlier for option chain queries
 
-DEFAULT_EXCHANGE = "FEHK"
+DEFAULT_EXCHANGE = "SMART"
 # Default exchange identifier (e.g., "SMART", "FEHK", "NYMEX")
 
 DEFAULT_USE_LOOP = False
