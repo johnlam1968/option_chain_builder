@@ -11,7 +11,11 @@ Handles:
 - Timeout errors
 
 Configuration:
-    - max_retries: Maximum retry attempts
+    - max_retries: Total number of attempts, including the first. The handler
+      will try the operation at most ``max_retries`` times (default 3, so
+      ``1 original attempt + 2 retries``). The previous behaviour of
+      ``max_retries + 1`` attempts inflated the count beyond what callers
+      expected and caused confusing log messages like ``Retry 4/3``.
     - initial_backoff: Initial backoff in seconds
     - backoff_multiplier: Exponential backoff multiplier
     - max_backoff: Maximum backoff cap in seconds
@@ -21,9 +25,19 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
 import time
 from typing import Any, Callable, Optional
 from settings.config import BACKOFF_MULTIPLIER, INITIAL_BACKOFF, MAX_BACKOFF, MAX_RETRIES
+
+
+# Module-level logger. Replaces the project's "print everything to stdout"
+# pattern (see H-6 in MINI_AGENT_PLAN4B_REVIEW.md). Callers that want logs to
+# appear on the terminal should configure a StreamHandler on this logger; the
+# default config (no handlers) means log records go to the last-resort handler
+# which writes to stderr — still visible, but no longer racing with the
+# stdout-redirect pattern in sync/main.py and async_dev/httpx approach.py.
+logger = logging.getLogger(__name__)
 
 
 class SyncRetryHandler:
@@ -42,7 +56,9 @@ class SyncRetryHandler:
         Initialize SyncRetryHandler with configuration parameters.
 
         Args:
-            max_retries: Maximum number of retry attempts (default: from config)
+            max_retries: Total attempts including the first (default: from
+                config). So ``max_retries=3`` means 1 original attempt + 2
+                retries.
             initial_backoff: Initial backoff time in seconds (default: from config)
             backoff_multiplier: Multiplier for exponential backoff (default: from config)
             max_backoff: Maximum backoff time cap (default: from config)
@@ -91,17 +107,35 @@ class SyncRetryHandler:
             wait_time: Time to wait before retry
             error_code: HTTP error code (if applicable)
         """
+        # NOTE (H-6): use the module logger instead of print so log records
+        # can be routed through the application's logging configuration rather
+        # than racing with the stdout-redirect pattern.
         if error_type == "Timeout":
-            if attempt < self.max_retries:
-                print(f"⏱️ {error_type} on attempt {attempt + 1}/{self.max_retries}. Retry after {wait_time:.1f}s")
+            if attempt < self.max_retries - 1:
+                logger.warning(
+                    "⏱️ %s on attempt %d/%d. Retry after %.1fs",
+                    error_type, attempt + 1, self.max_retries, wait_time,
+                )
             else:
-                print(f"❌ {error_type} after {self.max_retries} retries. Giving up.")
+                logger.error(
+                    "❌ %s after %d retries. Giving up.",
+                    error_type, self.max_retries,
+                )
         elif error_type == "RateLimit":
-            print(f"⚠️ Rate limit hit (429). Retry {attempt + 1}/{self.max_retries} after {wait_time:.1f}s")
+            logger.warning(
+                "⚠️ Rate limit hit (429). Retry %d/%d after %.1fs",
+                attempt + 1, self.max_retries, wait_time,
+            )
         elif error_type == "ServerError":
-            print(f"⚠️ Server error {error_code}. Retry {attempt + 1}/{self.max_retries} after {wait_time:.1f}s")
+            logger.warning(
+                "⚠️ Server error %s. Retry %d/%d after %.1fs",
+                error_code, attempt + 1, self.max_retries, wait_time,
+            )
         elif error_type == "ConnectionError":
-            print(f"⚠️ Connection error. Retry {attempt + 1}/{self.max_retries} after {wait_time:.1f}s")
+            logger.warning(
+                "⚠️ Connection error. Retry %d/%d after %.1fs",
+                attempt + 1, self.max_retries, wait_time,
+            )
 
     def retry(self, func: Callable, *args, **kwargs) -> Any:
         """
@@ -116,7 +150,13 @@ class SyncRetryHandler:
             Function result if successful, None after max retries
         """
         # Retry loop: attempt 0 = first try, attempt 1 = first retry, etc.
-        for attempt in range(self.max_retries + 1):
+        #
+        # ``max_retries`` is the *total number of attempts including the first*.
+        # With the previous ``range(self.max_retries + 1)`` the loop ran one
+        # attempt *more* than the configured limit, which combined with the
+        # ``attempt + 1 / max_retries`` log format to produce messages like
+        # ``Retry 4/3``. See H-2 in MINI_AGENT_PLAN4B_REVIEW.md.
+        for attempt in range(self.max_retries):
             try:
                 result = func(*args, **kwargs)
 
@@ -126,7 +166,7 @@ class SyncRetryHandler:
 
                 # Check if result indicates a retryable HTTP error
                 if self.is_retryable_response(result):
-                    if attempt < self.max_retries:
+                    if attempt < self.max_retries - 1:
                         wait_time = self.calculate_backoff(attempt)
 
                         # Determine error type for logging
@@ -147,18 +187,24 @@ class SyncRetryHandler:
 
             except (TimeoutError, ConnectionError, OSError) as e:
                 # Handle timeouts and connection errors
-                if attempt < self.max_retries:
+                if attempt < self.max_retries - 1:
                     wait_time = self.calculate_backoff(attempt)
                     error_type = "Timeout" if isinstance(e, TimeoutError) else "ConnectionError"
                     self.log_retry_attempt(error_type, attempt + 1, wait_time)
                     time.sleep(wait_time)
                 else:
-                    print(f"❌ {type(e).__name__} after {self.max_retries} retries. Giving up.")
+                    logger.error(
+                        "❌ %s after %d retries. Giving up.",
+                        type(e).__name__, self.max_retries,
+                    )
                     return None
 
             except Exception as e:
                 # Don't retry on unexpected exceptions
-                print(f"❌ Unexpected error: {type(e).__name__}: {e}")
+                logger.exception(
+                    "❌ Unexpected error during retry: %s: %s",
+                    type(e).__name__, e,
+                )
                 return None
 
         # All retries exhausted

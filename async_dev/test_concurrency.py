@@ -13,29 +13,36 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import time
 import importlib.util
+from unittest.mock import patch
 from dotenv import load_dotenv
 from httpx import AsyncClient, Limits
 from utils.session_health_helper import create_session_aware_client
 from settings.config import (
-    DEFAULT_SYMBOL, DEFAULT_EXCHANGE, 
-    MAX_RATE, MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS, 
+    DEFAULT_SYMBOL, DEFAULT_EXCHANGE,
+    MAX_RATE, MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS,
     KEEPALIVE_EXPIRY, GET_RESPONSE_TIME_OUT, IBKR_BASE_URL,
     SEARCH_PATH, STRIKE_PATH, INFO_PATH
 )
 
 load_dotenv()
 
-# Import AsyncOptionChainBuilder from httpx approach.py
-spec = importlib.util.spec_from_file_location("httpx_approach", "httpx_approach.py")
-if spec is None:
-    raise ImportError("Failed to load module")
-module = importlib.util.module_from_spec(spec)
-if module is None:
-    raise ImportError("Failed to load module")
-if spec.loader is None:
-    raise ImportError("Failed to load module")
-spec.loader.exec_module(module)
-AsyncOptionChainBuilder = module.AsyncOptionChainBuilder
+# NOTE (H-12): prefer the cleanly-named alias module if it is present. That
+# module re-exports AsyncOptionChainBuilder from the legacy "httpx approach.py"
+# (whose name contains a space). Falling back to the dynamic loader keeps the
+# test runnable even if the alias is removed in the future.
+try:
+    from async_dev.async_option_chain_builder import AsyncOptionChainBuilder  # type: ignore
+except ImportError:
+    spec = importlib.util.spec_from_file_location("httpx_approach", "httpx_approach.py")
+    if spec is None:
+        raise ImportError("Failed to load module")
+    module = importlib.util.module_from_spec(spec)
+    if module is None:
+        raise ImportError("Failed to load module")
+    if spec.loader is None:
+        raise ImportError("Failed to load module")
+    spec.loader.exec_module(module)
+    AsyncOptionChainBuilder = module.AsyncOptionChainBuilder
 
 
 async def test_concurrency(max_concurrency: int) -> dict:
@@ -54,77 +61,76 @@ async def test_concurrency(max_concurrency: int) -> dict:
     print(f"Testing MAX_CONCURRENCY = {max_concurrency}")
     print(f"{'='*60}")
     
-    # Temporarily override config
+    # NOTE (H-13): the original code mutated ``cfg.MAX_CONCURRENCY`` directly
+    # with a manual save/restore in a try/except + finally. That cleanup is
+    # best-effort — a crash before the restore line polluted subsequent tests.
+    # ``unittest.mock.patch.object`` is exception-safe and restores the value
+    # even if the awaited code raises.
     import settings.config as cfg
-    original_max_concurrency = cfg.MAX_CONCURRENCY
-    cfg.MAX_CONCURRENCY = max_concurrency
-    
-    try:
-        # Create IBKR client
-        session_manager = create_session_aware_client(
-            use_oauth=True,
-            timeout=15,
-            retry_on_410=True,
-            max_health_retries=3,
-            health_check_interval=60.0,
-            tickler_retry_delay=5.0,
-            auto_reinitialize=True
-        )
-        
-        if session_manager is None:
-            return {"error": "Failed to create IBKR client"}
-        
-        signer = session_manager.client
-        _healthy_client = session_manager.ensure_healthy_session()
-        if _healthy_client is None:
-            return {"error": "Failed to establish healthy session"}
-        
-        # Create httpx client
-        session = AsyncClient(
-            limits=Limits(
-                max_connections=MAX_CONNECTIONS,
-                max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
-                keepalive_expiry=KEEPALIVE_EXPIRY
-            ),
-            timeout=GET_RESPONSE_TIME_OUT
-        )
-        
-        # Create builder
-        builder = AsyncOptionChainBuilder(
-            session,
-            signer,
-            DEFAULT_SYMBOL,
-            DEFAULT_EXCHANGE,
-            use_loop=False,
-            show_progress=False
-        )
-        
-        # Run test
-        start_time = time.time()
-        
-        await builder.get_option_chain_async()
-        
-        end_time = time.time()
-        total_time = end_time - start_time
-        
-        # Restore original config
-        cfg.MAX_CONCURRENCY = original_max_concurrency
-        
-        return {
-            "max_concurrency": max_concurrency,
-            "total_time": total_time,
-            "avg_response_time": 0.0,  # Will be calculated from log
-            "503_count": 0,  # Will be counted from log
-            "throughput": 0.0,  # Will be calculated
-            "total_contracts": 6772  # Placeholder
-        }
-        
-    except Exception as e:
-        cfg.MAX_CONCURRENCY = original_max_concurrency
-        return {
-            "max_concurrency": max_concurrency,
-            "error": f"{type(e).__name__}: {e}"
-        }
+
+    with patch.object(cfg, "MAX_CONCURRENCY", max_concurrency):
+        try:
+            # Create IBKR client
+            session_manager = create_session_aware_client(
+                use_oauth=True,
+                timeout=15,
+                retry_on_410=True,
+                max_health_retries=3,
+                health_check_interval=60.0,
+                tickler_retry_delay=5.0,
+                auto_reinitialize=True
+            )
+
+            if session_manager is None:
+                return {"error": "Failed to create IBKR client"}
+
+            signer = session_manager.client
+            _healthy_client = session_manager.ensure_healthy_session()
+            if _healthy_client is None:
+                return {"error": "Failed to establish healthy session"}
+
+            # Create httpx client
+            session = AsyncClient(
+                limits=Limits(
+                    max_connections=MAX_CONNECTIONS,
+                    max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
+                    keepalive_expiry=KEEPALIVE_EXPIRY
+                ),
+                timeout=GET_RESPONSE_TIME_OUT
+            )
+
+            # Create builder
+            builder = AsyncOptionChainBuilder(
+                session,
+                signer,
+                DEFAULT_SYMBOL,
+                DEFAULT_EXCHANGE,
+                use_loop=False,
+                show_progress=False
+            )
+
+            # Run test
+            start_time = time.time()
+
+            await builder.get_option_chain_async()
+
+            end_time = time.time()
+            total_time = end_time - start_time
+
+            return {
+                "max_concurrency": max_concurrency,
+                "total_time": total_time,
+                "avg_response_time": 0.0,  # Will be calculated from log
+                "503_count": 0,  # Will be counted from log
+                "throughput": 0.0,  # Will be calculated
+                "total_contracts": 6772  # Placeholder
+            }
+
+        except Exception as e:
+            return {
+                "max_concurrency": max_concurrency,
+                "error": f"{type(e).__name__}: {e}"
+            }
 
 
 async def run_all_tests():

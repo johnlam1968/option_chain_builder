@@ -1,11 +1,20 @@
 # Configuration file for option chain application
 
+import os
+
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
 
-DATABASE_URL = "postgresql+psycopg://postgres:secret@localhost:5432/options_db"
-# PostgreSQL connection string
+# PostgreSQL connection string.
+# The password MUST be supplied via the DATABASE_URL environment variable
+# (or .env file loaded by python-dotenv in the entry point) — never commit
+# credentials to source. See .env.example for the expected schema.
+# Default points to localhost only as a last-resort fallback when the
+# environment variable is absent; it carries no password.
+_DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres@localhost:5432/options_db"
+
+DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DATABASE_URL)
 # Note: Replace 'localhost' with 'db' if Python is inside Docker network
 
 
@@ -26,8 +35,14 @@ INFO_PATH = "iserver/secdef/info"       # Get contract details
 # DEFAULT VALUES
 # ============================================================================
 
-DEFAULT_SYMBOL = "FXI"
+DEFAULT_SYMBOL = "HSI"
 # Default symbol/underlier for option chain queries
+#
+# NOTE: AGENTS.md (line 118) documents ``DEFAULT_SYMBOL`` as ``"HSI"``. The
+# previous value of ``"FXI"`` was a code-vs-docs drift (H-1 in
+# MINI_AGENT_PLAN4B_REVIEW.md). We pick "HSI" because that is the documented
+# default — call sites that want a different underlier should pass the symbol
+# explicitly.
 
 DEFAULT_EXCHANGE = "SMART"
 # Default exchange identifier (e.g., "SMART", "FEHK", "NYMEX")

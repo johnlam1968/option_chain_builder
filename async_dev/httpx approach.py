@@ -3,6 +3,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
 from dotenv import load_dotenv
 import asyncio
 import functools
@@ -16,11 +17,13 @@ from utils.session_health_helper import create_session_aware_client
 import time
 from aiometer import run_all
 from settings.config import (
-    DEFAULT_SYMBOL, DEFAULT_EXCHANGE, DEFAULT_USE_LOOP, 
+    DEFAULT_SYMBOL, DEFAULT_EXCHANGE, DEFAULT_USE_LOOP,
     GET_RESPONSE_TIME_OUT, MAX_RATE, MAX_CONCURRENCY,
     MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS, KEEPALIVE_EXPIRY
 )
 from utils.response_extraction import ResponseExtraction
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -70,7 +73,7 @@ class AsyncOptionChainBuilder:
         _underliers = await self._fetcher.get_underliers(self._symbol)
         
         if not _underliers or len(_underliers) == 0:
-            print(f"No underliers found for symbol {self._symbol}")
+            logger.info("No underliers found for symbol %s", self._symbol)
             return
             
         _underlier = _underliers[0]  # type: ignore
@@ -84,10 +87,10 @@ class AsyncOptionChainBuilder:
         
         # Validate extracted values
         if not _option_type:
-            print("No option type found in underlier data")
+            logger.info("No option type found in underlier data")
             return
         if not _option_exchange:
-            print("No exchange found in underlier data")
+            logger.info("No exchange found in underlier data")
             return
 
         # Fetch strikes for all expiration months using aiometer
@@ -111,7 +114,7 @@ class AsyncOptionChainBuilder:
                 _call_strikes = ResponseExtraction.extract_strikes_info(_dict)
                 _strike_dicts.append({month: _call_strikes})
             else:
-                print(f"Failed to fetch strikes for {month}")
+                logger.info("Failed to fetch strikes for %s", month)
 
         # Choose processing method
         start_time = time.time()
@@ -120,7 +123,7 @@ class AsyncOptionChainBuilder:
         else:
             await self.get_option_chain_gather(_conid, _option_type, _option_exchange, _strike_dicts)
         end_time = time.time()
-        print(f"Time taken: {end_time - start_time}")
+        logger.info("Time taken: %.2f", end_time - start_time)
 
     async def get_option_chain_loop(self, conid, option_type, option_exchange, list_of_dict) -> None:
         """Fetch option chain using sequential loop with Fetcher class."""
@@ -152,7 +155,7 @@ class AsyncOptionChainBuilder:
             call_results, put_results, self._symbol
         )
         
-        print(f"Retrieved {len(option_data)} contracts in {_lapse}")
+        logger.info("Retrieved %d contracts in %.2fs", len(option_data), _lapse)
         store_data(option_data)
 
     async def get_option_chain_gather(self, conid, option_type, option_exchange, strike_dicts) -> None:
@@ -175,18 +178,17 @@ class AsyncOptionChainBuilder:
                         functools.partial(self._fetcher.get_contract, conid, month, strike, "P", option_type, option_exchange)
                     )
 
-        import time
         start_time = time.time()
-        
+
         # Use aiometer to process all call tasks with rate limiting and concurrency control
-        print(f"Fetching {len(_call_tasks)} call contracts...")
+        logger.info("Fetching %d call contracts...", len(_call_tasks))
         _call_result_list = await run_all(
             _call_tasks,
             max_at_once=MAX_CONCURRENCY,
             max_per_second=MAX_RATE
         )
-        
-        print(f"Fetching {len(_put_tasks)} put contracts...")
+
+        logger.info("Fetching %d put contracts...", len(_put_tasks))
         _put_result_list = await run_all(
             _put_tasks,
             max_at_once=MAX_CONCURRENCY,
@@ -194,7 +196,11 @@ class AsyncOptionChainBuilder:
         )
 
         end_time = time.time()
-        print(f"Fetched {len(_call_result_list) + len(_put_result_list)} contracts in {end_time - start_time} seconds.")
+        logger.info(
+            "Fetched %d contracts in %.2f seconds.",
+            len(_call_result_list) + len(_put_result_list),
+            end_time - start_time,
+        )
 
         # Extract option data using ResponseExtraction
         option_data = ResponseExtraction.extract_option_results(
@@ -204,23 +210,39 @@ class AsyncOptionChainBuilder:
         _task_length = len(_call_tasks) + len(_put_tasks)
         _retrieved_length = len(option_data)
         _diff = _task_length - _retrieved_length
-        print(f"Retrieved {_retrieved_length} out of requested {_task_length}, with {_diff} not retrieved.")
+        logger.info(
+            "Retrieved %d out of requested %d, with %d not retrieved.",
+            _retrieved_length, _task_length, _diff,
+        )
 
         store_data(option_data)
 
 if __name__ == "__main__":
-    # Redirect stdout to log file
+    # Redirect stdout to log file.
+    # NOTE (H-6 / H-7): mirror the sync entry-point pattern. Echo the log
+    # destination *before* swapping sys.stdout (H-7) so a failure during
+    # file-open is still visible in the terminal, and route tracebacks
+    # through the logging module (H-6) so they integrate with the project's
+    # central handler configuration.
     import datetime
     import sys
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"logs/async_test_{timestamp}.log"
-    
-    with open(log_file, 'w') as f:
+
+    print(f"Starting async test — output will be logged to {log_file}")
+
+    try:
+        f = open(log_file, 'w')
+    except OSError as e:
+        print(f"ERROR: could not open log file {log_file}: {e}")
+        sys.exit(1)
+
+    with f:
         sys.stdout = f
-        
+
         try:
             print(f"Starting async test for {DEFAULT_SYMBOL} at {timestamp}")
-            
+
             # Create IBKR client with session health management
             _session_manager = create_session_aware_client(
                 use_oauth=True,
@@ -231,16 +253,16 @@ if __name__ == "__main__":
                 tickler_retry_delay=5.0,
                 auto_reinitialize=True
             )
-            
+
             if _session_manager is None:
                 print("❌ Failed to create IBKR client. Please check your OAuth credentials.")
                 sys.exit(1)
-            
+
             print("IBKR client created successfully with session health management")
-            
+
             # Get the client from the session manager
             _signer = _session_manager.client
-            
+
             # Configure connection pool to prevent PoolTimeout
             # Note: IBKR uses HTTP/1.1 (no multiplexing), so connection pool is critical
             _session = AsyncClient(
@@ -252,37 +274,39 @@ if __name__ == "__main__":
                 timeout=GET_RESPONSE_TIME_OUT
             )
             print(f"AsyncClient created with connection pool: max={MAX_CONNECTIONS}, keepalive={MAX_KEEPALIVE_CONNECTIONS}")
-            
+
             _symbol = DEFAULT_SYMBOL
             print(f"Creating AsyncOptionChainBuilder for {_symbol}/{DEFAULT_EXCHANGE}")
-            
+
             # Ensure session is healthy before starting
             _healthy_client = _session_manager.ensure_healthy_session()
             if _healthy_client is None:
                 print("❌ Failed to establish healthy session. Please check your connection and try again.")
                 sys.exit(1)
-            
+
             chain_builder = AsyncOptionChainBuilder(
-                _session, 
-                _signer, 
-                _symbol, 
-                DEFAULT_EXCHANGE, 
+                _session,
+                _signer,
+                _symbol,
+                DEFAULT_EXCHANGE,
                 DEFAULT_USE_LOOP,
                 show_progress=False  # Set to True to see progress indicators
             )
-            
+
             # Build option chain
             asyncio.run(chain_builder.get_option_chain_async())
-            
+
             print("\n" + "="*50)
             print("Async test completed successfully!")
             print("="*50)
-            
+
         except Exception as e:
+            # Log full traceback through the logging module (H-6) while still
+            # printing a short banner through stdout (which is the log file at
+            # this point, by design).
+            logger.exception("Async test failed: %s: %s", type(e).__name__, e)
             print(f"ERROR: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
         finally:
             sys.stdout = sys.__stdout__
-    
+
     print(f"Async test log saved to: {log_file}")

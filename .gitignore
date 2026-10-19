@@ -1,8 +1,18 @@
 __pycache__/
 option_chain_dataset.csv
 
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
 cline/
 # Logs
 logs/
 /tmp/*.log
 option_chain_builder.code-workspace
+
+# Editor / tool caches
+.crush/
+*.swp
+.DS_Store.agent_memory.json

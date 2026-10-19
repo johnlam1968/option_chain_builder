@@ -2,7 +2,6 @@ import os
 import json
 import base64
 import secrets
-import binascii
 import requests
 import time
 import datetime
@@ -12,6 +11,24 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.pbkdf2 import HMAC
 from cryptography.hazmat.backends import default_backend
+
+# Module-level logger so token-bearing paths never log raw secrets via print().
+import logging
+logger = logging.getLogger(__name__)
+
+
+def _redact_token(token):
+    """Return a safe, partial view of a secret token suitable for logging.
+
+    Never log full OAuth tokens / verifiers / LSTs — they are bearer credentials.
+    Showing the prefix and suffix is enough to correlate logs without leaking
+    enough material to replay the credential.
+    """
+    if not token or not isinstance(token, str):
+        return "***"
+    if len(token) <= 8:
+        return "***"
+    return f"{token[:4]}***{token[-4:]}"
 
 class IBKRAuthClient:
     """
@@ -50,15 +67,17 @@ class IBKRAuthClient:
         Load DH parameters (Prime and Generator) from a PEM file.
         Note: According to docs, Generator is always 2.
         """
-        from cryptography.hazmat.primitives.asymmetric import dh
-        from cryptography.hazmat.primitives import serialization
-        
         with open(path, "rb") as f:
             parameters = serialization.load_pem_parameters(f.read())
+            # On modern `cryptography` (>= 3.1), `parameter_numbers()` returns a
+            # `DHParameterNumbers` whose `.p` and `.g` are already `int` — no
+            # `int.from_bytes` wrapper is needed (that call previously raised
+            # TypeError because the argument was not a bytes-like object).
+            pn = parameters.parameter_numbers()
             # Generator is always 2 according to docs
             return {
-                'p': int.from_bytes(parameters.parameter_numbers('p')),
-                'g': int.from_bytes(parameters.parameter_numbers('g')) 
+                'p': pn.p,
+                'g': pn.g
             }
 
     def _generate_oauth_nonce(self):
@@ -213,7 +232,9 @@ class IBKRAuthClient:
         dh_random = secrets.randbits(256)
         
         # B = g ^ a % p
-        g = 2 # Always 2 according to docs
+        # Read generator from the loaded DH params (fall back to 2 for legacy
+        # configs that pre-date the DHParameterNumbers fix).
+        g = self.dh_params.get('g') or 2  # Always 2 according to docs
         p = self.dh_params['p']
         dh_challenge = pow(g, dh_random, p)
         # Remove leading '0x' and ensure it's a valid hex string
@@ -276,11 +297,15 @@ class IBKRAuthClient:
         if len(K_hex) % 2 != 0:
              # Add a leading 0 if odd number of chars
             K_hex = "0" + K_hex
-        # If lacking sign bit (len(bin(K)[2:]) % 8 == 0), prepend a null byte
-        if bin(K).count('1') % 8 == 0:
-            K_hex = "00" + K_hex
-            
+        # If lacking sign bit (high bit of first byte would be 0),
+        # prepend a null byte so the resulting bytes round-trip through
+        # big-endian signed-int encoding. The previous test
+        # (`bin(K).count('1') % 8 == 0`) was the popcount parity — it had no
+        # correlation with the high bit, so the rule was wrong.
         K_bytes = bytes.fromhex(K_hex)
+        if K_bytes and (K_bytes[0] & 0x80) == 0:
+            K_bytes = b"\x00" + K_bytes
+            K_hex = "00" + K_hex
         
         # The prepend is the decrypted access_secret, which we need as bytes.
         # The prepend_hex is the hex string, convert to bytes.
@@ -298,13 +323,14 @@ class IBKRAuthClient:
         # Re-hash consumer key using computed LST
         validation_h = HMAC.new(base64.b64decode(self.live_session_token), hashes.SHA1(), digest=self.consumer_key.encode('utf-8')).digest()
         if validation_h.hex() != lst_sig:
-            print("WARNING: LST validation failed. Check implementation.")
-            print(f"Expected: {lst_sig}")
-            print(f"Computed: {validation_h.hex()}")
+            logger.warning("LST validation failed. Check implementation.")
+            logger.warning("Expected: %s", _redact_token(lst_sig))
+            logger.warning("Computed: %s", _redact_token(validation_h.hex()))
         else:
-            print("LST validated successfully.")
-            
-        print(f"Live Session Token Generated Successfully. Expires: {datetime.fromtimestamp(lst_exp)}")
+            logger.info("LST validated successfully.")
+
+        logger.info("Live Session Token Generated Successfully. Expires: %s",
+                    datetime.fromtimestamp(lst_exp))
         return self.live_session_token
 
     def make_authenticated_request(self, method, endpoint, body=None):
@@ -366,49 +392,57 @@ if __name__ == "__main__":
 
     client = IBKRAuthClient(config)
 
-    print("--- Step 1: Request Token ---")
+    logger.info("--- Step 1: Request Token ---")
     try:
         request_token = client.request_token()
-        print(f"Request Token obtained: {request_token}")
+        logger.info("Request Token obtained: %s", _redact_token(request_token))
     except Exception as e:
-        print(f"Error obtaining Request Token: {e}")
+        logger.error("Error obtaining Request Token: %s", e)
         exit()
-    
-    print("\n--- Step 2: Authorization (Manual) ---")
+
+    logger.info("--- Step 2: Authorization (Manual) ---")
     # In a real application, you would redirect the user to:
     # https://interactivebrokers.com/authorize?oauth_token=<REQUEST_TOKEN>
     # The user logs in, and your callback URL receives the oauth_verifier.
     # For this script, we simulate this step by asking for input.
-    print("Please visit the following URL to authorize the application:")
-    print(f"https://interactivebrokers.com/authorize?oauth_token={request_token}")
+    logger.info("Please visit the following URL to authorize the application:")
+    logger.info("https://interactivebrokers.com/authorize?oauth_token=%s", _redact_token(request_token))
     verifier = input("Enter the 'oauth_verifier' value from the callback URL: ")
 
-    print("\n--- Step 3: Access Token ---")
+    logger.info("--- Step 3: Access Token ---")
     try:
         access_token, access_secret = client.get_access_token(verifier)
-        print(f"Access Token obtained: {access_token}")
-        # print(f"Access Secret: {access_secret}")
+        logger.info("Access Token obtained: %s", _redact_token(access_token))
+        # NB: never log the access_secret; it is the bearer credential.
     except Exception as e:
-        print(f"Error obtaining Access Token: {e}")
+        logger.error("Error obtaining Access Token: %s", e)
         exit()
 
-    print("\n--- Step 4: Live Session Token (LST) ---")
+    logger.info("--- Step 4: Live Session Token (LST) ---")
     try:
         lst = client.get_live_session_token()
-        print(f"Live Session Token (LST): {lst}")
+        logger.info("Live Session Token (LST): %s", _redact_token(lst))
     except Exception as e:
-        print(f"Error obtaining LST: {e}")
+        logger.error("Error obtaining LST: %s", e)
         exit()
-    
-    print("\n--- Step 5: Authenticated Request Example ---")
+
+    logger.info("--- Step 5: Authenticated Request Example ---")
     # Example: Initialize brokerage session
     init_endpoint = "/iserver/auth/ssodh/init"
     body = {"publish": True, "compete": True}
-    
+
     try:
         response = client.make_authenticated_request("POST", init_endpoint, body)
-        print(f"Brokerage Session Init Response: {json.dumps(response, indent=2)}")
-        print("\nYou can now use the generated LST to make authenticated API requests.")
+        # Log a redacted summary rather than the full response — it can contain
+        # account IDs, positions, and session metadata.
+        try:
+            summary = json.dumps({k: _redact_token(v) if isinstance(v, str) and len(v) > 32 else v
+                                  for k, v in (response or {}).items()},
+                                 indent=2)
+        except Exception:
+            summary = "<non-dict response>"
+        logger.info("Brokerage Session Init Response: %s", summary)
+        logger.info("\nYou can now use the generated LST to make authenticated API requests.")
     except Exception as e:
-        print(f"Authenticated request failed: {e}")
+        logger.error("Authenticated request failed: %s", e)
 

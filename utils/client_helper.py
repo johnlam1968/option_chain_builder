@@ -1,10 +1,20 @@
 """
 Helper functions for IBKR client initialization with exception handling.
 """
+import logging
 import time
+from urllib.parse import urlparse, urlunparse
 from ibind import IbkrClient
 from ibind.support.errors import ExternalBrokerError
 from ibind.oauth.oauth1a import OAuth1aConfig
+
+
+# Module-level logger. The previous version of this file used bare ``print()``
+# for every status message, which raced with the project's stdout-redirect
+# pattern (see H-6 / H-7 in MINI_AGENT_PLAN4B_REVIEW.md). Records now flow
+# through the logging system; callers can attach a StreamHandler or
+# FileHandler if they want them on the terminal.
+logger = logging.getLogger(__name__)
 
 
 def create_ibkr_client(
@@ -76,22 +86,43 @@ def create_ibkr_client(
         
         # If retrying on 410, try different API servers
         if retry_on_410 and attempt > 0 and attempt < len(api_servers):
-            # Extract the base URL and replace the host
+            # Replace the URL host with the next API server. The previous
+            # implementation split the URL on '/' and rewrote parts[2], which
+            # silently produced broken URLs for inputs containing ports,
+            # userinfo, query strings, or fragments. Use urlparse instead.
             if url:
-                # Parse the URL and replace the host
-                parts = url.split('/')
-                if len(parts) >= 3:
-                    parts[2] = api_servers[attempt]  # Replace host
-                    current_url = '/'.join(parts)
+                parsed = urlparse(url)
+                if parsed.scheme and parsed.netloc:
+                    # netloc may carry userinfo + port — preserve everything
+                    # except the host (first component of netloc).
+                    userinfo_port = parsed.netloc.split('@')[-1]
+                    if ':' in userinfo_port:
+                        _host, _port = userinfo_port.rsplit(':', 1)
+                        new_netloc = f"{api_servers[attempt]}:{_port}"
+                    else:
+                        new_netloc = api_servers[attempt]
+                    # Carry any userinfo forward.
+                    if '@' in parsed.netloc:
+                        new_netloc = parsed.netloc.split('@', 1)[0] + '@' + new_netloc
+                    current_url = urlunparse((
+                        parsed.scheme,
+                        new_netloc,
+                        parsed.path,
+                        parsed.params,
+                        parsed.query,
+                        parsed.fragment,
+                    ))
+                # If parsing failed, leave current_url alone and let IbkrClient
+                # surface the error.
             else:
                 # Build URL from components
                 current_url = f'https://{api_servers[attempt]}:{port}{base_route}'
-            
-            print(f"Attempt {attempt + 1}/{max_attempts}: Trying API server: {current_url}")
-        
+
+            logger.info("Attempt %d/%d: Trying API server: %s", attempt + 1, max_attempts, current_url)
+
         try:
-            print(f"Initializing IbkrClient (attempt {attempt + 1}/{max_attempts})...")
-            
+            logger.info("Initializing IbkrClient (attempt %d/%d)...", attempt + 1, max_attempts)
+
             client = IbkrClient(
                 account_id=account_id,
                 url=current_url,
@@ -108,65 +139,63 @@ def create_ibkr_client(
                 use_oauth=use_oauth,
                 oauth_config=oauth_config,
             )
-            
-            print("✅ IbkrClient initialized successfully!")
+
+            logger.info("✅ IbkrClient initialized successfully!")
             return client
-            
+
         except ExternalBrokerError as e:
             error_msg = str(e)
-            print(f"❌ ExternalBrokerError: {error_msg}")
-            
+            logger.error("❌ ExternalBrokerError: %s", error_msg)
+
             # Check for specific error types
             if e.status_code == 410 and 'gone' in error_msg.lower():
                 if attempt < max_attempts - 1:
-                    print(f"⚠️ OAuth session expired (410 Gone). Will retry with different server...")
+                    logger.warning("⚠️ OAuth session expired (410 Gone). Will retry with different server...")
                     time.sleep(2)  # Wait before retry
                     continue
                 else:
-                    print("❌ All API servers exhausted. Please check your OAuth credentials and try again later.")
-                    print("   Possible solutions:")
-                    print("   - Re-authenticate with IBKR")
-                    print("   - Check if OAuth credentials are still valid")
-                    print("   - Try again later (session may be temporarily unavailable)")
-            
+                    logger.error("❌ All API servers exhausted. Please check your OAuth credentials and try again later.")
+                    logger.error("   Possible solutions:")
+                    logger.error("   - Re-authenticate with IBKR")
+                    logger.error("   - Check if OAuth credentials are still valid")
+                    logger.error("   - Try again later (session may be temporarily unavailable)")
+
             elif 'no bridge' in error_msg:
-                print("❌ No bridge error. Try calling `initialize_brokerage_session()` first.")
-            
+                logger.error("❌ No bridge error. Try calling `initialize_brokerage_session()` first.")
+
             else:
-                print(f"❌ IBKR API error: {e}")
-                
+                logger.error("❌ IBKR API error: %s", e)
+
             return None
-            
+
         except ImportError as e:
-            print(f"❌ ImportError: {e}")
-            print("   OAuth support missing. Install with: pip install ibind[oauth]")
+            logger.error("❌ ImportError: %s", e)
+            logger.error("   OAuth support missing. Install with: pip install ibind[oauth]")
             return None
-            
+
         except RuntimeError as e:
-            print(f"❌ RuntimeError: {e}")
-            print("   Live session token validation failed.")
-            print("   Check your OAuth credentials and try again.")
+            logger.error("❌ RuntimeError: %s", e)
+            logger.error("   Live session token validation failed.")
+            logger.error("   Check your OAuth credentials and try again.")
             return None
-            
+
         except ConnectionError as e:
-            print(f"❌ ConnectionError: {e}")
-            print("   Failed to connect to IBKR API.")
-            print("   Check your internet connection and IBKR service status.")
-            
+            logger.error("❌ ConnectionError: %s", e)
+            logger.error("   Failed to connect to IBKR API.")
+            logger.error("   Check your internet connection and IBKR service status.")
+
             if attempt < max_attempts - 1:
-                print("   Retrying...")
+                logger.error("   Retrying...")
                 time.sleep(2)
                 continue
-            
+
             return None
-            
+
         except Exception as e:
-            print(f"❌ Unexpected error creating IbkrClient: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("❌ Unexpected error creating IbkrClient: %s: %s", type(e).__name__, e)
             return None
-    
-    print("❌ Failed to create IbkrClient after all attempts.")
+
+    logger.error("❌ Failed to create IbkrClient after all attempts.")
     return None
 
 
@@ -189,16 +218,16 @@ def create_ibkr_client_with_retry(
         IbkrClient instance if successful, None otherwise
     """
     for attempt in range(max_initialization_attempts):
-        print(f"\nInitialization attempt {attempt + 1}/{max_initialization_attempts}")
-        
+        logger.info("\nInitialization attempt %d/%d", attempt + 1, max_initialization_attempts)
+
         client = create_ibkr_client(**kwargs)
-        
+
         if client is not None:
             return client
-        
+
         if attempt < max_initialization_attempts - 1:
-            print(f"\n⏳ Waiting {delay_between_attempts} seconds before retry...")
+            logger.info("\n⏳ Waiting %.1f seconds before retry...", delay_between_attempts)
             time.sleep(delay_between_attempts)
-    
-    print(f"\n❌ Failed to create IbkrClient after {max_initialization_attempts} attempts.")
+
+    logger.error("\n❌ Failed to create IbkrClient after %d attempts.", max_initialization_attempts)
     return None

@@ -15,8 +15,9 @@ from ibind.support.errors import ExternalBrokerError
 from ibind.oauth.oauth1a import OAuth1aConfig
 from utils.client_helper import create_ibkr_client
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# NOTE (M-26): this module previously called logging.basicConfig at import
+# time, which clobbered any logging setup the application had already done.
+# We now only fetch a named logger and let the entry-point configure handlers.
 logger = logging.getLogger(__name__)
 
 
@@ -121,8 +122,15 @@ class SessionHealthManager:
             
             if not self.is_session_healthy():
                 logger.warning("Session unhealthy, attempting to recover...")
-                
-                if self._auto_reinitialize and self._consecutive_failures <= self._max_health_retries:
+
+                # NOTE (M-14): the previous condition was
+                #     ``self._consecutive_failures <= self._max_health_retries``
+                # which combined with the fact that ``_consecutive_failures``
+                # is incremented *before* this check produced an extra
+                # reinitialization attempt. Strict less-than matches the
+                # documented "max_health_retries attempts" intent and avoids
+                # that off-by-one.
+                if self._auto_reinitialize and self._consecutive_failures < self._max_health_retries:
                     time.sleep(self._tickler_retry_delay)
                     return self.reinitialize_session()
                 else:

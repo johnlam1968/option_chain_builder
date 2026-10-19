@@ -6,7 +6,11 @@ IBKR API responses, making it shareable between synchronous and
 asynchronous implementations.
 """
 
+import logging
 from typing import List, Dict, Tuple, Optional, Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResponseExtraction:
@@ -33,21 +37,33 @@ class ResponseExtraction:
             or None if extraction fails
         """
         conid = underlier.get("conid")
-        
+
         if not conid:
-            print(f"No contract ID found for {symbol}")
+            logger.info("No contract ID found for %s", symbol)
             return None
-        
+
         sections = underlier.get("sections", [{}])
         if len(sections) < 2:
-            print("No derivatives found for underlier")
+            logger.info("No derivatives found for underlier")
             return None
 
         # Get option section (handle special exchange types)
         underlier_section = sections[0]
         if underlier_section.get('exchange') in {"SEHK;", "HKFE;"}:
-            option_section = sections[2]
-            print(f"Option Section: {option_section}")
+            # Guard against IndexError if the response has fewer sections than
+            # the dual-section logic assumes (see M-25). Falls back to
+            # sections[1] with a warning, which matches the historical
+            # behaviour for non-HK underliers.
+            if len(sections) >= 3:
+                option_section = sections[2]
+            else:
+                logger.warning(
+                    "extract_underlier_info: HK exchange flag set but only %d section(s) in response; "
+                    "falling back to sections[1].",
+                    len(sections),
+                )
+                option_section = sections[1]
+            logger.debug("Option Section: %s", option_section)
         else:
             option_section = sections[1]
 

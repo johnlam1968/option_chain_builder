@@ -3,6 +3,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
+
 from SyncFetcher import SyncFetcher
 from utils.database import store_data
 from ibind import IbkrClient
@@ -10,6 +12,9 @@ from typing import List, Dict, Any
 import time
 from settings.config import DEFAULT_SYMBOL, DEFAULT_EXCHANGE
 from utils.response_extraction import ResponseExtraction
+
+
+logger = logging.getLogger(__name__)
 
 
 class SyncOptionChainBuilder:
@@ -41,34 +46,34 @@ class SyncOptionChainBuilder:
         # Get underlier information
         underliers = self._fetcher.get_underliers(self._symbol)
         if not underliers:
-            print(f"Cannot find underlier for {self._symbol}")
+            logger.info("Cannot find underlier for %s", self._symbol)
             return
-        
+
         underlier = underliers[0]  # type: ignore
-        
+
         # Extract underlier info using ResponseExtraction
         extracted_info = ResponseExtraction.extract_underlier_info(underlier, self._symbol)
         if extracted_info is None:
             return
-        
+
         conid, option_type, option_exchange, expiration_months = extracted_info
-        
+
         # Validate extracted values
         if not option_type:
-            print("No option type found in underlier data")
+            logger.info("No option type found in underlier data")
             return
         if not option_exchange:
-            print("No exchange found in underlier data")
+            logger.info("No exchange found in underlier data")
             return
-        
+
         option_data: List[Dict[str, str | None]] = []
         start_time = time.time()
-        
+
         # Iterate through months and strikes
         for month in expiration_months:
             strikes = self._fetcher.get_strikes(conid, month, option_type, option_exchange)
             if not strikes:
-                print(f"No strikes found for {month}")
+                logger.info("No strikes found for %s", month)
                 continue
             
             # Extract call strikes using ResponseExtraction
@@ -101,8 +106,8 @@ class SyncOptionChainBuilder:
 
         end_time = time.time()
         elapsed = end_time - start_time
-        print(f"Fetched {len(option_data)} contracts in {elapsed} seconds.")
-        
+        logger.info("Fetched %d contracts in %.2f seconds.", len(option_data), elapsed)
+
         store_data(option_data)  # type: ignore
 
 

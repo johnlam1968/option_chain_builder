@@ -87,6 +87,12 @@ docker run -d \
   postgres
 ```
 
+Then create a `.env` file in the project root containing the full DSN so the password never lives in source:
+```
+DATABASE_URL=postgresql+psycopg://postgres:secret@localhost:5432/options_db
+```
+(or `postgresql+psycopg://postgres:secret@db:5432/options_db` if Python runs in the same Docker network — change `localhost` to `db`).
+
 If Python is running inside Docker network, change `localhost` to `db` in `DATABASE_URL`.
 
 ### Installing Dependencies
@@ -100,7 +106,7 @@ pip install ibind sqlmodel python-dotenv mcp-server fastmcp httpx aiometer tenac
 ### Main Configuration File: `settings/config.py`
 
 **Database Configuration:**
-- `DATABASE_URL`: PostgreSQL connection string
+- `DATABASE_URL`: PostgreSQL connection string. Read from the `DATABASE_URL` environment variable (loaded from `.env` via python-dotenv). Defaults to `postgresql+psycopg://postgres@localhost:5432/options_db` (no password) when unset — set `DATABASE_URL` to a full connection string such as `postgresql+psycopg://user:password@host:5432/dbname` before running.
 - Modify `localhost` to `db` if Python runs in Docker network
 
 **IBKR API Configuration:**
